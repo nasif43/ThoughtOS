@@ -45,18 +45,29 @@ def tx() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+_VEC_LOG_ONCE = False
+
+
 def _load_vec(conn: sqlite3.Connection) -> None:
-    global _VEC_LOADED
+    global _VEC_LOADED, _VEC_LOG_ONCE
     try:
         sqlite_vec.load(conn)
         _VEC_LOADED = True
-        logger.info("sqlite-vec loaded via sqlite_vec.load()")
+        if not _VEC_LOG_ONCE:
+            _VEC_LOG_ONCE = True
+            logger.info("sqlite-vec loaded via sqlite_vec.load()")
+        else:
+            logger.debug("sqlite-vec loaded via sqlite_vec.load()")
     except Exception as e1:
         try:
             conn.enable_load_extension(True)
             conn.load_extension(sqlite_vec.loadable_path())
             _VEC_LOADED = True
-            logger.info("sqlite-vec loaded via direct extension load")
+            if not _VEC_LOG_ONCE:
+                _VEC_LOG_ONCE = True
+                logger.info("sqlite-vec loaded via direct extension load")
+            else:
+                logger.debug("sqlite-vec loaded via direct extension load")
         except Exception as e2:
             logger.warning(f"sqlite-vec not available: {e1}; {e2}")
             logger.warning("Vector search disabled. /recall will not work.")
@@ -271,9 +282,8 @@ def search_vectors(query_embedding: list[float], limit: int = 5) -> list[sqlite3
             SELECT v.message_id, v.distance, m.content, m.created_at, m.intent
             FROM vectors v
             JOIN messages m ON m.id = v.message_id
-            WHERE v.embedding MATCH ?
+            WHERE v.embedding MATCH ? AND k = ?
             ORDER BY v.distance
-            LIMIT ?
             """,
             (blob, limit),
         ).fetchall()
