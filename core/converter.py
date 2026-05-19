@@ -5,7 +5,7 @@ from typing import Optional
 
 from groq import Groq
 
-from config import GROQ_API_KEY, GROQ_COMPLETION_MODEL
+from config import GROQ_API_KEY, GROQ_COMPLETION_MODEL, GROQ_FALLBACK_MODELS
 from core.db import (
     get_open_session, get_session_tasks, create_session,
     set_summary, tx,
@@ -15,7 +15,6 @@ from core.retriever import find_related
 from core.guardrails import validate_task_board
 from prompts.system import SYSTEM_PROMPT
 from prompts.convert import CONVERT_PROMPT
-from prompts.summarise import SUMMARISE_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -48,16 +47,26 @@ def parse_time_from_message(text: str) -> int:
 
 
 def _call_groq(messages: list[dict]) -> Optional[str]:
-    try:
-        response = _get_client().chat.completions.create(
-            model=GROQ_COMPLETION_MODEL,
-            messages=messages,
-            temperature=0.1,
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        logger.error(f"Groq call failed: {e}")
-        return None
+    models = GROQ_FALLBACK_MODELS
+    last_error = None
+    for model in models:
+        try:
+            response = _get_client().chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.1,
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            last_error = e
+            err_str = str(e)
+            if "429" in err_str or "rate_limit" in err_str.lower():
+                logger.warning(f"Rate limited on {model}, trying next model")
+            else:
+                logger.error(f"Groq call failed on {model}: {e}")
+                return None
+    logger.error(f"All fallback models exhausted. Last error: {last_error}")
+    return None
 
 
 def _parse_json(raw: str) -> Optional[dict]:
@@ -143,7 +152,9 @@ def run_convert(user_text: str) -> Optional[dict]:
         cur = conn.execute("INSERT INTO sessions (status) VALUES ('open')")
         new_session_id = cur.lastrowid
 
-    _regenerate_tier2(session_id, tier1_text)
+    summary = parsed.get("summary", "").strip()
+    if summary:
+        set_summary(session_id, summary)
 
     tasks = get_session_tasks(session_id)
     return {
@@ -155,19 +166,3 @@ def run_convert(user_text: str) -> Optional[dict]:
         "related_surfaced": parsed.get("related_surfaced", []),
         "raw_board": parsed,
     }
-
-
-def _regenerate_tier2(session_id: int, tier1_text: str) -> None:
-    previous = get_tier2()
-    prompt = SUMMARISE_PROMPT.format(
-        previous_summary=previous or "(no prior sessions)",
-        session_messages=tier1_text,
-    )
-    raw = _call_groq([
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": prompt},
-    ])
-    if raw:
-        set_summary(session_id, raw.strip())
-    else:
-        logger.warning("Tier 2 regeneration failed")

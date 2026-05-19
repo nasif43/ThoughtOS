@@ -42,5 +42,6 @@ OUTPUT: Valid JSON only. No markdown. No preamble. No explanation.
   "flagged": [
     {{ "message_id": integer, "reason": "string — specific missing detail" }}
   ],
-  "related_surfaced": ["string — past thought worth noting today"]
+  "related_surfaced": ["string — past thought worth noting today"],
+  "summary": "string — one-paragraph summary of this session to use as Tier 2 memory for future sessions"
 }}"""
