@@ -10,12 +10,14 @@ def health_check() -> dict:
         "database": False,
         "vec_extension": False,
         "groq_api": False,
+        "nomic_api": False,
         "telegram_token": False,
     }
 
     results["database"] = _check_db()
     results["vec_extension"] = _check_vec()
     results["groq_api"] = _check_groq()
+    results["nomic_api"] = _check_nomic()
     results["telegram_token"] = _check_telegram()
 
     all_ok = all(results.values())
@@ -84,6 +86,27 @@ def _check_groq() -> bool:
         return True
     except Exception as e:
         logger.error(f"Health: Groq API check failed: {e}")
+        return False
+
+
+def _check_nomic() -> bool:
+    try:
+        from config import NOMIC_API_KEY
+        if not NOMIC_API_KEY:
+            logger.error("Health: NOMIC_API_KEY is empty")
+            return False
+        from nomic import login, embed
+        login(token=NOMIC_API_KEY)
+        output = embed.text(
+            texts=["health check"],
+            model="nomic-embed-text-v1.5",
+            task_type="search_document",
+        )
+        emb = output["embeddings"][0]
+        logger.info(f"Health: Nomic API OK (dim={len(emb)})")
+        return True
+    except Exception as e:
+        logger.error(f"Health: Nomic API check failed: {e}")
         return False
 
 
