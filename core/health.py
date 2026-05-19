@@ -95,7 +95,7 @@ def _check_embeddings() -> bool:
         model = _get_model()
         if not model:
             return False
-        emb = model.encode("health check").tolist()
+        emb = list(model.embed("health check"))[0].tolist()
         logger.info(f"Health: Embedding model OK (dim={len(emb)})")
         return True
     except Exception as e:

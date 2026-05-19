@@ -2,22 +2,21 @@ import asyncio
 import logging
 from typing import Optional
 
-from sentence_transformers import SentenceTransformer
+from fastembed import TextEmbedding
 
 from core.db import get_unembedded_messages, mark_message_embedded, insert_vector
 
 logger = logging.getLogger(__name__)
 
-_model: Optional[SentenceTransformer] = None
-_model_lock = asyncio.Lock()
+_model: Optional[TextEmbedding] = None
 
 
-def _get_model() -> Optional[SentenceTransformer]:
+def _get_model() -> Optional[TextEmbedding]:
     global _model
     if _model is None:
         try:
-            _model = SentenceTransformer("nomic-ai/nomic-embed-text-v1.5")
-            logger.info("Embedding model loaded (nomic-embed-text-v1.5)")
+            _model = TextEmbedding(model_name="nomic-embed-text-v1.5")
+            logger.info("Embedding model loaded (nomic-embed-text-v1.5 via fastembed)")
         except Exception as e:
             logger.error(f"Failed to load embedding model: {e}")
             return None
@@ -29,7 +28,8 @@ def embed_text_sync(text: str) -> Optional[list[float]]:
     if not model:
         return None
     try:
-        return model.encode(text).tolist()
+        embeddings = list(model.embed(text))
+        return embeddings[0].tolist()
     except Exception as e:
         logger.error(f"Embed failed for text: {text[:80]} — {e}")
         return None
