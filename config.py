@@ -8,7 +8,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID", "0"))
 
 GROQ_COMPLETION_MODEL = "groq/compound"
-GROQ_EMBED_MODEL = "nomic-embed-text"
+GROQ_EMBED_MODEL = "nomic-embed-text-v1.5"
 
 DB_PATH = os.getenv("DB_PATH", "data/brain.db")
 
