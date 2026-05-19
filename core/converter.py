@@ -7,7 +7,7 @@ from groq import Groq
 
 from config import GROQ_API_KEY, GROQ_COMPLETION_MODEL
 from core.db import (
-    get_open_session, get_session_tasks,
+    get_open_session, get_session_tasks, create_session,
     set_summary, tx,
 )
 from core.memory import get_tier1_with_ids, get_tier2, get_seed_action, count_tokens, trim_to_budget

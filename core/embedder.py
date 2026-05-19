@@ -15,8 +15,8 @@ def _get_model() -> Optional[TextEmbedding]:
     global _model
     if _model is None:
         try:
-            _model = TextEmbedding(model_name="nomic-embed-text-v1.5")
-            logger.info("Embedding model loaded (nomic-embed-text-v1.5 via fastembed)")
+            _model = TextEmbedding(model_name="nomic-ai/nomic-embed-text-v1.5")
+            logger.info("Embedding model loaded (nomic-ai/nomic-embed-text-v1.5 via fastembed)")
         except Exception as e:
             logger.error(f"Failed to load embedding model: {e}")
             return None
