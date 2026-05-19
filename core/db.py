@@ -21,16 +21,13 @@ _BACKUP_INTERVAL_SECONDS = 21600
 
 
 def _get_connection() -> sqlite3.Connection:
-    global _VEC_LOADED
     os.makedirs(os.path.dirname(DB_PATH) if os.path.dirname(DB_PATH) else ".", exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=5000")
-    if not _VEC_LOADED:
-        _load_vec(conn)
-        _VEC_LOADED = True
+    _load_vec(conn)
     return conn
 
 
@@ -49,13 +46,16 @@ def tx() -> Iterator[sqlite3.Connection]:
 
 
 def _load_vec(conn: sqlite3.Connection) -> None:
+    global _VEC_LOADED
     try:
         sqlite_vec.load(conn)
+        _VEC_LOADED = True
         logger.info("sqlite-vec loaded via sqlite_vec.load()")
     except Exception as e1:
         try:
             conn.enable_load_extension(True)
             conn.load_extension(sqlite_vec.loadable_path())
+            _VEC_LOADED = True
             logger.info("sqlite-vec loaded via direct extension load")
         except Exception as e2:
             logger.warning(f"sqlite-vec not available: {e1}; {e2}")
@@ -131,6 +131,13 @@ def init_db() -> None:
             created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         """)
+        if _VEC_LOADED:
+            conn.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS vectors USING vec0(
+                    message_id INTEGER PRIMARY KEY,
+                    embedding  FLOAT[768]
+                )
+            """)
         conn.commit()
     finally:
         conn.close()
