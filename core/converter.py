@@ -1,6 +1,5 @@
 import json
 import logging
-import time
 import re
 from typing import Optional
 
@@ -8,8 +7,7 @@ from groq import Groq
 
 from config import GROQ_API_KEY, GROQ_COMPLETION_MODEL
 from core.db import (
-    get_open_session, create_session, close_session,
-    insert_task, insert_flagged, get_session_tasks,
+    get_open_session, get_session_tasks,
     set_summary, tx,
 )
 from core.memory import get_tier1_with_ids, get_tier2, get_seed_action, count_tokens, trim_to_budget
@@ -121,26 +119,30 @@ def run_convert(user_text: str) -> Optional[dict]:
 
     valid_tasks, flagged_items = validate_task_board(parsed, valid_ids)
 
-    for i, task in enumerate(valid_tasks):
-        insert_task(
-            session_id=session_id,
-            project=task.get("project", "Unknown"),
-            action=task.get("action", ""),
-            source_msg_id=task.get("source_msg_id", 0),
-            estimated_mins=task.get("estimated_mins", 30),
-            block_number=task.get("block", i + 1),
-            order_index=i,
+    with tx() as conn:
+        for i, task in enumerate(valid_tasks):
+            conn.execute(
+                """INSERT INTO tasks (session_id, project, action, source_msg_id, estimated_mins, block_number, order_index)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (session_id, task.get("project", "Unknown"), task.get("action", ""),
+                 task.get("source_msg_id", 0), task.get("estimated_mins", 30),
+                 task.get("block", i + 1), i),
+            )
+
+        for fi in flagged_items:
+            conn.execute(
+                "INSERT INTO flagged_items (message_id, session_id, reason) VALUES (?, ?, ?)",
+                (fi.get("message_id", 0), session_id, fi.get("reason", "Flagged by guardrails")),
+            )
+
+        conn.execute(
+            "UPDATE sessions SET status = 'converted', converted_at = CURRENT_TIMESTAMP, task_board = ? WHERE id = ?",
+            (json.dumps(parsed), session_id),
         )
 
-    for fi in flagged_items:
-        insert_flagged(
-            message_id=fi.get("message_id", 0),
-            session_id=session_id,
-            reason=fi.get("reason", "Flagged by guardrails"),
-        )
+        cur = conn.execute("INSERT INTO sessions (status) VALUES ('open')")
+        new_session_id = cur.lastrowid
 
-    close_session(session_id, json.dumps(parsed))
-    new_session_id = create_session()
     _regenerate_tier2(session_id, tier1_text)
 
     tasks = get_session_tasks(session_id)
