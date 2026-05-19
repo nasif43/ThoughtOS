@@ -439,11 +439,11 @@ def main() -> None:
         ],
         states={
             CONVERTING: [MessageHandler(filters.TEXT & ~filters.COMMAND, convert_command)],
-            AWAITING_FLAG_RESPONSE: [CallbackQueryHandler(flag_callback)],
+            AWAITING_FLAG_RESPONSE: [CallbackQueryHandler(flag_callback, per_message=False)],
             AWAITING_FLAG_DETAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, flag_detail_received)],
             AWAITING_REMIND_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, flag_remind_time)],
             LOGGING: [MessageHandler(filters.TEXT & ~filters.COMMAND, log_text_received)],
-            CHECKIN: [CallbackQueryHandler(checkin_callback)],
+            CHECKIN: [CallbackQueryHandler(checkin_callback, per_message=False)],
         },
         fallbacks=[CommandHandler("cancel", lambda u, c: ConversationHandler.END)],
     )
