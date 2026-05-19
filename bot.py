@@ -3,7 +3,6 @@ import logging
 import os
 import time
 import re
-import asyncio
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -427,14 +426,11 @@ def main() -> None:
     if not health_results["vec_extension"]:
         logger.warning("Vector search unavailable — /recall will not work")
 
-    async def startup():
+    async def post_init(app):
         await embed_pending()
+        asyncio.create_task(_scheduled_backup_loop())
 
-    asyncio.run(startup())
-
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-
-    asyncio.create_task(_scheduled_backup_loop())
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).post_init(post_init).build()
 
     conv_handler = ConversationHandler(
         entry_points=[
