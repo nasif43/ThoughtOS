@@ -437,13 +437,14 @@ def main() -> None:
             CommandHandler("convert", convert_command, filters.User(ALLOWED_USER_ID)),
             CommandHandler("log", log_command, filters.User(ALLOWED_USER_ID)),
         ],
+        per_message=False,
         states={
             CONVERTING: [MessageHandler(filters.TEXT & ~filters.COMMAND, convert_command)],
-            AWAITING_FLAG_RESPONSE: [CallbackQueryHandler(flag_callback, per_message=False)],
+            AWAITING_FLAG_RESPONSE: [CallbackQueryHandler(flag_callback)],
             AWAITING_FLAG_DETAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, flag_detail_received)],
             AWAITING_REMIND_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, flag_remind_time)],
             LOGGING: [MessageHandler(filters.TEXT & ~filters.COMMAND, log_text_received)],
-            CHECKIN: [CallbackQueryHandler(checkin_callback, per_message=False)],
+            CHECKIN: [CallbackQueryHandler(checkin_callback)],
         },
         fallbacks=[CommandHandler("cancel", lambda u, c: ConversationHandler.END)],
     )
