@@ -10,14 +10,14 @@ def health_check() -> dict:
         "database": False,
         "vec_extension": False,
         "groq_api": False,
-        "nomic_api": False,
+        "embeddings": False,
         "telegram_token": False,
     }
 
     results["database"] = _check_db()
     results["vec_extension"] = _check_vec()
     results["groq_api"] = _check_groq()
-    results["nomic_api"] = _check_nomic()
+    results["embeddings"] = _check_embeddings()
     results["telegram_token"] = _check_telegram()
 
     all_ok = all(results.values())
@@ -89,24 +89,17 @@ def _check_groq() -> bool:
         return False
 
 
-def _check_nomic() -> bool:
+def _check_embeddings() -> bool:
     try:
-        from config import NOMIC_API_KEY
-        if not NOMIC_API_KEY:
-            logger.error("Health: NOMIC_API_KEY is empty")
+        from core.embedder import _get_model
+        model = _get_model()
+        if not model:
             return False
-        from nomic import login, embed
-        login(token=NOMIC_API_KEY)
-        output = embed.text(
-            texts=["health check"],
-            model="nomic-embed-text-v1.5",
-            task_type="search_document",
-        )
-        emb = output["embeddings"][0]
-        logger.info(f"Health: Nomic API OK (dim={len(emb)})")
+        emb = model.encode("health check").tolist()
+        logger.info(f"Health: Embedding model OK (dim={len(emb)})")
         return True
     except Exception as e:
-        logger.error(f"Health: Nomic API check failed: {e}")
+        logger.error(f"Health: Embedding model check failed: {e}")
         return False
 
 

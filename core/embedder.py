@@ -1,52 +1,38 @@
 import asyncio
 import logging
-import time
 from typing import Optional
 
-from config import NOMIC_API_KEY
+from sentence_transformers import SentenceTransformer
+
 from core.db import get_unembedded_messages, mark_message_embedded, insert_vector
 
 logger = logging.getLogger(__name__)
 
-_logged_in = False
+_model: Optional[SentenceTransformer] = None
+_model_lock = asyncio.Lock()
 
 
-def _ensure_login() -> None:
-    global _logged_in
-    if _logged_in:
-        return
-    if not NOMIC_API_KEY:
-        logger.error("NOMIC_API_KEY not set — embeddings disabled")
-        return
-    try:
-        from nomic import login
-        login(token=NOMIC_API_KEY)
-        _logged_in = True
-        logger.info("Nomic login successful")
-    except Exception as e:
-        logger.error(f"Nomic login failed: {e}")
-        _logged_in = False
+def _get_model() -> Optional[SentenceTransformer]:
+    global _model
+    if _model is None:
+        try:
+            _model = SentenceTransformer("nomic-ai/nomic-embed-text-v1.5")
+            logger.info("Embedding model loaded (nomic-embed-text-v1.5)")
+        except Exception as e:
+            logger.error(f"Failed to load embedding model: {e}")
+            return None
+    return _model
 
 
 def embed_text_sync(text: str) -> Optional[list[float]]:
-    _ensure_login()
-    if not _logged_in:
+    model = _get_model()
+    if not model:
         return None
-    for attempt in range(3):
-        try:
-            from nomic import embed
-            output = embed.text(
-                texts=[text],
-                model="nomic-embed-text-v1.5",
-                task_type="search_document",
-            )
-            return output["embeddings"][0]
-        except Exception as e:
-            wait = 2 ** attempt
-            logger.warning(f"Embed attempt {attempt + 1} failed: {e}. Retrying in {wait}s")
-            time.sleep(wait)
-    logger.error(f"Embed failed after 3 attempts for text: {text[:80]}")
-    return None
+    try:
+        return model.encode(text).tolist()
+    except Exception as e:
+        logger.error(f"Embed failed for text: {text[:80]} — {e}")
+        return None
 
 
 async def embed_text(text: str) -> Optional[list[float]]:

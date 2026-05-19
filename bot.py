@@ -425,8 +425,8 @@ def main() -> None:
         logger.warning("Groq API unavailable — /convert and /log will fail until fixed")
     if not health_results["vec_extension"]:
         logger.warning("Vector search unavailable — /recall will not work")
-    if not health_results["nomic_api"]:
-        logger.warning("Nomic embeddings unavailable — background embedding disabled")
+    if not health_results["embeddings"]:
+        logger.warning("Local embedding model unavailable — background embedding disabled")
 
     async def post_init(app):
         await embed_pending()
