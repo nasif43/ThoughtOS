@@ -1,0 +1,14 @@
+.env
+data/
+logs/
+__pycache__/
+*.pyc
+venv/
+.venv/
+*.bak
+test_*.py
+node_modules/
+*.docx
+*.md
+package*.json
+script.js
