@@ -1,11 +1,12 @@
 import json
 import logging
+import time
 from typing import Optional
 
 from groq import Groq
 
-from config import GROQ_API_KEY, GROQ_COMPLETION_MODEL
-from core.db import get_session_tasks, insert_log, get_open_session
+from config import GROQ_API_KEY, GROQ_FALLBACK_MODELS
+from core.db import get_session_tasks, get_last_converted_session_tasks, insert_log
 from prompts.system import SYSTEM_PROMPT
 from prompts.log import LOG_PROMPT
 
@@ -21,32 +22,60 @@ def _get_client() -> Groq:
     return _client
 
 
-def parse_log_input(session_id: int, raw_log_text: str) -> Optional[dict]:
+def _call_groq(messages: list[dict]) -> Optional[str]:
+    models = GROQ_FALLBACK_MODELS
+    last_error = None
+    for model in models:
+        try:
+            response = _get_client().chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.1,
+                max_tokens=1500,
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            last_error = e
+            err_str = str(e)
+            if "429" in err_str or "rate_limit" in err_str.lower():
+                logger.warning(f"Rate limited on {model}, waiting 2s before retry")
+                time.sleep(2)
+            elif "too large" in err_str.lower() or "reduce your message" in err_str.lower():
+                logger.warning(f"Prompt too large for {model}, trying next model")
+            else:
+                logger.error(f"Groq log call failed on {model}: {e}")
+                return None
+    logger.error(f"All fallback models exhausted. Last error: {last_error}")
+    return None
+
+
+def _get_task_board(session_id: int) -> str:
     tasks = get_session_tasks(session_id)
-    task_lines = []
+    if not tasks:
+        tasks = get_last_converted_session_tasks()
+    if not tasks:
+        return "(no task board)"
+    lines = []
     for t in tasks:
-        task_lines.append(f"[Block {t['block_number']}] {t['project']}: {t['action']} — {t['status']}")
-    task_board_str = "\n".join(task_lines) if task_lines else "(no task board)"
+        lines.append(f"[Block {t['block_number']}] {t['project']}: {t['action']} — {t['status']}")
+    return "\n".join(lines)
+
+
+def parse_log_input(session_id: int, raw_log_text: str) -> Optional[dict]:
+    task_board_str = _get_task_board(session_id)
 
     prompt = LOG_PROMPT.format(
         task_board_json=task_board_str,
         raw_log_text=raw_log_text,
     )
 
-    try:
-        response = _get_client().chat.completions.create(
-            model=GROQ_COMPLETION_MODEL,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.1,
-        )
-    except Exception as e:
-        logger.error(f"Groq log call failed: {e}")
+    raw = _call_groq([
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ])
+    if not raw:
         return None
 
-    raw = response.choices[0].message.content
     clean = raw.strip()
     if clean.startswith("```"):
         clean = clean.removeprefix("```json").removeprefix("```").strip()

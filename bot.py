@@ -24,7 +24,7 @@ from config import (
     DB_PATH,
     RATE_LIMITS,
 )
-from core.db import init_db, get_open_session, create_session, insert_message, backup_db
+from core.db import init_db, get_open_session, create_session, insert_message, backup_db, get_last_converted_session_tasks, update_task_status
 from core.embedder import embed_inbox_message, embed_pending
 from core.converter import run_convert
 from core.logger import parse_log_input
@@ -36,7 +36,7 @@ from core.log_setup import setup_logging
 setup_logging()
 logger = logging.getLogger(__name__)
 
-CONVERTING, AWAITING_FLAG_RESPONSE, AWAITING_FLAG_DETAIL, AWAITING_REMIND_TIME, LOGGING, CHECKIN = range(6)
+LOGGING = range(1)
 
 _last_call: dict[str, float] = {}
 _convert_lock = asyncio.Lock()
@@ -112,6 +112,157 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
 
+# --- Task completion detection ---
+
+_TASK_DONE_PATTERNS = [
+    re.compile(r"(?:done|finished|completed)\s*(?:with\s*)?(?:task\s*)?(\d+|①|②|③|④|⑤)", re.IGNORECASE),
+    re.compile(r"(?:i\'?m\s*)?done\s*(?:with\s*)?(?:task\s*)?(\d+|①|②|③|④|⑤)", re.IGNORECASE),
+    re.compile(r"(im|i'm)\s*done\s*(?:with\s*)?(.+)", re.IGNORECASE),
+    re.compile(r"(?:finished|completed)\s*(?:the\s*)?(.+)", re.IGNORECASE),
+    re.compile(r"(\d+|①|②|③|④|⑤)\s*(?:is\s*)?done", re.IGNORECASE),
+]
+
+
+async def _handle_task_completion(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    text = update.message.text.strip()
+    tasks = get_last_converted_session_tasks()
+    if not tasks:
+        return False
+
+    for pat in _TASK_DONE_PATTERNS:
+        m = pat.search(text)
+        if not m:
+            continue
+        # Try block number match first
+        block_map = {"①": 1, "②": 2, "③": 3, "④": 4, "⑤": 5}
+        matched = m.group(1)
+        block_num = None
+        if matched in block_map:
+            block_num = block_map[matched]
+        elif matched.isdigit():
+            block_num = int(matched)
+
+        if block_num:
+            for t in tasks:
+                if t["block_number"] == block_num:
+                    update_task_status(t["id"], "done")
+                    await update.message.reply_text(f"marked block {matched} as done. nice work.")
+                    return True
+        else:
+            # Keyword match against action text
+            keywords = m.group(2).strip() if len(m.groups()) >= 2 else m.group(0)
+            keywords_lower = keywords.lower()
+            for t in tasks:
+                if any(kw in t["action"].lower() for kw in keywords_lower.split()):
+                    update_task_status(t["id"], "done")
+                    await update.message.reply_text(f"marked \"{t['action']}\" as done. nice work.")
+                    return True
+    return False
+
+
+# --- Flag follow-up callbacks (standalone) ---
+
+async def flag_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "flag_detail":
+        await query.edit_message_text("go ahead — give me the details and I'll add it as a task.")
+        context.user_data["awaiting_flag_detail"] = True
+    elif query.data == "flag_remind":
+        await query.edit_message_text("got it. reply with when to remind you (e.g. 'in 3 days', 'next Monday').")
+        context.user_data["awaiting_flag_remind"] = True
+    elif query.data == "flag_drop":
+        flag = context.user_data.get("current_flag", {})
+        msg_id = flag.get("message_id")
+        if msg_id:
+            from core.db import update_message_flag
+            update_message_flag(msg_id, "dismissed")
+        await query.edit_message_text(
+            "dropped. it's still in your history so /recall can find it, but I won't bring it up again."
+        )
+
+
+async def _schedule_flag_followup(update: Update, context: ContextTypes.DEFAULT_TYPE, delay: int):
+    await asyncio.sleep(delay)
+    flags = context.user_data.get("pending_flags", [])
+    session_id = context.user_data.get("convert_session_id")
+    if not flags:
+        return
+    for f in flags[:1]:
+        keyboard = [
+            [InlineKeyboardButton("① give details now", callback_data="flag_detail")],
+            [InlineKeyboardButton("② remind me later", callback_data="flag_remind")],
+            [InlineKeyboardButton("③ drop it", callback_data="flag_drop")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        msg = (
+            f"quick follow-up on the flagged item:\n\n"
+            f"\"{f.get('reason', 'vague item')}\" — I couldn't make this a task "
+            f"because I don't have enough detail.\n\n"
+            f"what do you want to do with this?"
+        )
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=msg,
+            reply_markup=reply_markup,
+        )
+        context.user_data["current_flag"] = f
+        context.user_data["current_flag_session"] = session_id
+
+
+# --- Check-in callbacks (standalone) ---
+
+async def checkin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "checkin_ontrack":
+        await query.edit_message_text("noted. keep going.")
+    elif query.data == "checkin_drifted":
+        keyboard = [
+            [InlineKeyboardButton("① timebox recovery: 10 min to get back", callback_data="drift_timebox")],
+            [InlineKeyboardButton("② park it, move to next task", callback_data="drift_park")],
+        ]
+        await query.edit_message_text(
+            "noted. two options:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    elif query.data == "checkin_done":
+        await query.edit_message_text("good. move to the next task. message me when you're ready.")
+
+
+async def drift_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "drift_timebox":
+        await query.edit_message_text("set 10 min to get back to the current task, then continue.")
+    elif query.data == "drift_park":
+        await query.edit_message_text("marked as blocked. move to the next task now.")
+
+
+def _schedule_checkin(update: Update, context: ContextTypes.DEFAULT_TYPE, session_id: int, time_minutes: int):
+    midpoint = (time_minutes * 60) / 2
+
+    async def send_checkin():
+        await asyncio.sleep(midpoint)
+        keyboard = [
+            [InlineKeyboardButton("① yes, on track", callback_data="checkin_ontrack")],
+            [InlineKeyboardButton("② no, I drifted", callback_data="checkin_drifted")],
+            [InlineKeyboardButton("③ done, ready for next", callback_data="checkin_done")],
+        ]
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="halfway check-in.\n\nstill on task ①?",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+
+    asyncio.create_task(send_checkin())
+
+
+# --- Command handlers ---
+
 @authorized
 async def convert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     async with _convert_lock:
@@ -167,79 +318,6 @@ async def convert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         _schedule_checkin(update, context, result["session_id"], time_min)
 
-    return ConversationHandler.END
-
-
-async def _schedule_flag_followup(update: Update, context: ContextTypes.DEFAULT_TYPE, delay: int):
-    await asyncio.sleep(delay)
-    flags = context.user_data.get("pending_flags", [])
-    session_id = context.user_data.get("convert_session_id")
-    if not flags:
-        return
-    for f in flags[:1]:
-        keyboard = [
-            [InlineKeyboardButton("① give details now", callback_data="flag_detail")],
-            [InlineKeyboardButton("② remind me later", callback_data="flag_remind")],
-            [InlineKeyboardButton("③ drop it", callback_data="flag_drop")],
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        msg = (
-            f"quick follow-up on the flagged item:\n\n"
-            f"\"{f.get('reason', 'vague item')}\" — I couldn't make this a task "
-            f"because I don't have enough detail.\n\n"
-            f"what do you want to do with this?"
-        )
-        await update.message.reply_text(msg, reply_markup=reply_markup)
-        context.user_data["current_flag"] = f
-        context.user_data["current_flag_session"] = session_id
-
-
-async def flag_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == "flag_detail":
-        await query.edit_message_text("go ahead — give me the details and I'll add it as a task.")
-        return AWAITING_FLAG_DETAIL
-    elif query.data == "flag_remind":
-        await query.edit_message_text("got it. reply with when to remind you (e.g. 'in 3 days', 'next Monday').")
-        return AWAITING_REMIND_TIME
-    elif query.data == "flag_drop":
-        flag = context.user_data.get("current_flag", {})
-        msg_id = flag.get("message_id")
-        if msg_id:
-            from core.db import update_message_flag
-            update_message_flag(msg_id, "dismissed")
-        await query.edit_message_text(
-            "dropped. it's still in your history so /recall can find it, but I won't bring it up again."
-        )
-        return ConversationHandler.END
-    return ConversationHandler.END
-
-
-async def flag_detail_received(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    detail = update.message.text
-    await update.message.reply_text(f"added to today's board: {detail[:100]}...")
-    return ConversationHandler.END
-
-
-async def flag_remind_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text.lower()
-    remind_at = None
-    if "day" in text:
-        numbers = re.findall(r"\d+", text)
-        if numbers:
-            days = int(numbers[0])
-            remind_at = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
-    if not remind_at:
-        remind_at = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")
-
-    flag = context.user_data.get("current_flag", {})
-    msg_id = flag.get("message_id")
-    if msg_id:
-        from core.db import update_message_flag
-        update_message_flag(msg_id, "remind")
-    await update.message.reply_text(f"got it. I'll surface this on {remind_at} in your next /convert.")
     return ConversationHandler.END
 
 
@@ -313,8 +391,47 @@ async def recall_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text("\n".join(lines))
 
 
+# --- Message handlers ---
+
+async def handle_flag_detail(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    detail = update.message.text
+    context.user_data["awaiting_flag_detail"] = False
+    await update.message.reply_text(f"added to today's board: {detail[:100]}...")
+
+
+async def handle_flag_remind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data["awaiting_flag_remind"] = False
+    text = update.message.text.lower()
+    remind_at = None
+    if "day" in text:
+        numbers = re.findall(r"\d+", text)
+        if numbers:
+            days = int(numbers[0])
+            remind_at = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
+    if not remind_at:
+        remind_at = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")
+
+    flag = context.user_data.get("current_flag", {})
+    msg_id = flag.get("message_id")
+    if msg_id:
+        from core.db import update_message_flag
+        update_message_flag(msg_id, "remind")
+    await update.message.reply_text(f"got it. I'll surface this on {remind_at} in your next /convert.")
+
+
 @authorized
 async def inbox_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Route flag follow-up responses
+    if context.user_data.get("awaiting_flag_detail"):
+        return await handle_flag_detail(update, context)
+    if context.user_data.get("awaiting_flag_remind"):
+        return await handle_flag_remind(update, context)
+
+    # Check if user is reporting task completion
+    if await _handle_task_completion(update, context):
+        return
+
+    # Normal inbox storage
     session = get_open_session()
     if not session:
         session_id = create_session()
@@ -327,54 +444,6 @@ async def inbox_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text("got it.")
 
     asyncio.create_task(embed_inbox_message(msg_id, content))
-
-
-async def checkin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == "checkin_ontrack":
-        await query.edit_message_text(
-            "noted. keep going."
-        )
-    elif query.data == "checkin_drifted":
-        keyboard = [
-            [InlineKeyboardButton("① timebox recovery: 10 min to get back", callback_data="drift_timebox")],
-            [InlineKeyboardButton("② park it, move to next task", callback_data="drift_park")],
-        ]
-        await query.edit_message_text(
-            "noted. two options:",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
-    elif query.data == "checkin_done":
-        await query.edit_message_text(
-            "good. move to the next task. message me when you're ready."
-        )
-    elif query.data == "drift_timebox":
-        await query.edit_message_text("set 10 min to get back to the current task, then continue.")
-    elif query.data == "drift_park":
-        await query.edit_message_text("marked as blocked. move to the next task now.")
-
-    return CHECKIN
-
-
-def _schedule_checkin(update: Update, context: ContextTypes.DEFAULT_TYPE, session_id: int, time_minutes: int):
-    midpoint = (time_minutes * 60) / 2
-
-    async def send_checkin():
-        await asyncio.sleep(midpoint)
-        keyboard = [
-            [InlineKeyboardButton("① yes, on track", callback_data="checkin_ontrack")],
-            [InlineKeyboardButton("② no, I drifted", callback_data="checkin_drifted")],
-            [InlineKeyboardButton("③ done, ready for next", callback_data="checkin_done")],
-        ]
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="halfway check-in.\n\nstill on task ①?",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
-
-    asyncio.create_task(send_checkin())
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -442,19 +511,16 @@ def main() -> None:
             CommandHandler("convert", convert_command, filters.User(ALLOWED_USER_ID)),
             CommandHandler("log", log_command, filters.User(ALLOWED_USER_ID)),
         ],
-        per_message=False,
         states={
-            CONVERTING: [MessageHandler(filters.TEXT & ~filters.COMMAND, convert_command)],
-            AWAITING_FLAG_RESPONSE: [CallbackQueryHandler(flag_callback)],
-            AWAITING_FLAG_DETAIL: [MessageHandler(filters.TEXT & ~filters.COMMAND, flag_detail_received)],
-            AWAITING_REMIND_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, flag_remind_time)],
             LOGGING: [MessageHandler(filters.TEXT & ~filters.COMMAND, log_text_received)],
-            CHECKIN: [CallbackQueryHandler(checkin_callback)],
         },
         fallbacks=[CommandHandler("cancel", lambda u, c: ConversationHandler.END)],
     )
 
     app.add_handler(conv_handler)
+    app.add_handler(CallbackQueryHandler(checkin_callback, pattern="^checkin_"))
+    app.add_handler(CallbackQueryHandler(drift_callback, pattern="^drift_"))
+    app.add_handler(CallbackQueryHandler(flag_callback, pattern="^flag_"))
     app.add_handler(CommandHandler("recall", recall_command, filters.User(ALLOWED_USER_ID)))
     app.add_handler(CommandHandler("status", status_command, filters.User(ALLOWED_USER_ID)))
     app.add_handler(CommandHandler("help", help_command, filters.User(ALLOWED_USER_ID)))

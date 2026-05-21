@@ -14,15 +14,19 @@ CONVERT_PROMPT = """AVAILABLE TIME: {time_minutes} minutes
 
 TASK:
 Convert the inbox into an executable task board for the available time window.
-Select 1-3 ideas maximum. Break each into atomic steps.
 Fit blocks within the time window. Do not overfill.
 
-EXAMPLE OF A GOOD TASK:
-{{ "action": "Write the industry vertical filter function in retrieval.py",
-  "source_msg_id": 142, "estimated_mins": 45, "block": 1 }}
+EXAMPLES OF GOOD TASKS (mix of types):
+1. {{ "action": "Visit wener to diagnose the new graphics designer's PC issues",
+    "source_msg_id": 101, "estimated_mins": 60, "block": 1 }}
+2. {{ "action": "Write the industry vertical filter function in retrieval.py",
+    "source_msg_id": 142, "estimated_mins": 45, "block": 2 }}
+3. {{ "action": "Message Put to ask when she's coming back",
+    "source_msg_id": 108, "estimated_mins": 5, "block": 3 }}
 
-EXAMPLE OF A BAD TASK (too vague, no verb, no file, no scope):
-{{ "action": "Work on the filter", "source_msg_id": 142, ... }}
+EXAMPLES OF BAD TASKS:
+- {{ "action": "Work on stuff", ... }}  — too vague, no verb, no scope
+- {{ "action": "Follow up", ... }}  — missing who and about what
 
 OUTPUT: Valid JSON only. No markdown. No preamble. No explanation.
 {{
@@ -31,7 +35,7 @@ OUTPUT: Valid JSON only. No markdown. No preamble. No explanation.
       "name": "string",
       "tasks": [
         {{
-          "action": "string — verb-first, specific, names files or components",
+          "action": "string — verb-first, specific, describes what to actually do",
           "source_msg_id": integer,
           "estimated_mins": integer,
           "block": integer

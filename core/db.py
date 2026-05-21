@@ -385,6 +385,21 @@ def get_session_tasks(session_id: int) -> list[sqlite3.Row]:
         conn.close()
 
 
+def get_last_converted_session_tasks() -> list[sqlite3.Row]:
+    conn = _get_connection()
+    try:
+        session = conn.execute(
+            "SELECT id FROM sessions WHERE status = 'converted' ORDER BY converted_at DESC LIMIT 1"
+        ).fetchone()
+        if not session:
+            return []
+        return conn.execute(
+            "SELECT * FROM tasks WHERE session_id = ? ORDER BY block_number ASC", (session["id"],)
+        ).fetchall()
+    finally:
+        conn.close()
+
+
 def update_task_status(task_id: int, status: str) -> None:
     conn = _get_connection()
     try:
