@@ -1,20 +1,31 @@
 from typing import Optional
 
+from tiktoken import get_encoding
+
 from core.db import get_session_messages, get_current_summary, get_latest_log
+
+_ENCODING = None
+
+def _get_encoding():
+    global _ENCODING
+    if _ENCODING is None:
+        _ENCODING = get_encoding("cl100k_base")
+    return _ENCODING
 
 
 def count_tokens(text: str) -> int:
-    return max(1, int(len(text.split()) * 1.3))
+    return len(_get_encoding().encode(text or ""))
 
 
 def trim_to_budget(text: str, max_tokens: int, item_label: str = "messages") -> str:
-    if count_tokens(text) <= max_tokens:
+    enc = _get_encoding()
+    tokens = enc.encode(text)
+    if len(tokens) <= max_tokens:
         return text
-    words = text.split()
-    target_words = int(max_tokens / 1.3)
-    trimmed_words = words[-target_words:]
-    omitted = len(words) - target_words
-    return "...[truncated — " + str(omitted) + " " + item_label + " omitted]\n" + " ".join(trimmed_words)
+    trimmed_tokens = tokens[-max_tokens:]
+    omitted = len(tokens) - max_tokens
+    trimmed_text = enc.decode(trimmed_tokens)
+    return "...[truncated \u2014 " + str(omitted) + " " + item_label + " omitted]\n" + trimmed_text
 
 
 def get_tier1(session_id: int) -> str:

@@ -124,7 +124,10 @@ async def convert_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             elif result["error"] == "json parse failed":
                 await update.message.reply_text("conversion failed — please try again.")
             elif result["error"] == "groq call failed":
-                await update.message.reply_text("groq call failed — check API key and try again.")
+                await update.message.reply_text(
+                    "groq API error — this is usually a rate limit or token budget issue.\n"
+                    "try again in a minute, or send shorter messages before converting."
+                )
             return ConversationHandler.END
 
         tasks = result["tasks"]
